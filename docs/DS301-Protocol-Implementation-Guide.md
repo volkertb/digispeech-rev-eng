@@ -40,7 +40,8 @@ mixer modes of §8.3 [I]; a MAX758 buck regulator derives 5 V from the 9 V input
 4K-word on-chip RAM — bounding the onboard buffer depth (§13) and matching the 4 KB
 streaming block (§5) and the tiny ≤`0x79`-word download records. No discrete ADC is
 visible; recording likely digitizes inside the gate array or via the DSP's serial
-port [?]. This settles two community disputes: the chips are *not* ESS parts, and
+port [?] — a 1997 FAQ's claim that recording is "14-bit" points at a TI AIC-class
+converter (TLC3204x family: 14-bit, the standard C5x companion) [I]. This settles two community disputes: the chips are *not* ESS parts, and
 the DSP is exactly the "TMS32053" once guessed on VOGONS. The same chip set shipped
 in at least two more form factors (VOGONS teardowns): the **Sony PRD-155SB PCMCIA**
 card (a real SB-register interface — see §8.3) and the **DS103J** combo
@@ -293,6 +294,12 @@ UI offers 22.05 kHz/16-bit recording, but in the LGR footage that setting silent
 reverted to 11.025 kHz/3-bit ADPCM before recording — viewer frame analysis — so
 nothing observed contradicts the manual's recording rates. A May-1993 Usenet
 reviewer likewise found no stereo recording and nothing above 11.025 kHz exposed.)
+The ceiling rose with software: the v4.05-era drivers "record now at 22 Khz instead
+of 11 Khz" (1997 [mini-FAQ](https://www.newtale.com/pp/article215.html)) — so the
+22.05 kHz option in the Windows Sound Station UI was real v4.x capability. The same
+FAQ says recording "only at 14-bit" — plausibly the converter's true resolution
+behind the 16-bit data format, matching TI's 14-bit AIC codec family (TLC3204x),
+the standard C5x companion [I → §1, §13].
 
 ---
 
@@ -313,7 +320,10 @@ differed — and that the resident portion lives in extended memory, using almos
 conventional RAM); DMA-driven titles (demos, MOD players) usually failed; and the
 workaround for EMS-needing games was a Windows 386-enhanced DOS box, where the
 **VxD** provides the trap layer with a configurable virtual SB/AdLib/none
-personality and virtual address/IRQ/DMA settings. Resolution [O — strings in both
+personality and virtual address/IRQ/DMA settings. Under Windows 95 that same VxD
+path even covers **DOS-extender games**: a 1997
+[mini-FAQ](https://www.newtale.com/pp/article215.html) reports Doom running "with
+music and sound" in a Win95 DOS box — coverage `BMASTER` never had (§10.4). Resolution [O — strings in both
 builds]: BMASTER (self-identified "ABLE Sound" **V2.00** in 1993 → **V2.07** in the
 final 1996 release) is **VCPI-aware by design** — it diagnoses "unknown VCPI
 version" and warns about old EMM386 builds — so it runs under an EMM's VCPI or on
@@ -353,7 +363,12 @@ MIDI therefore inherits FM's limits (dropped instruments) and the mono-mix rule.
 
 The device's output mixer offers **either** stereo digital + line-in **or** mono
 synth + mono digital + line-in (manual). So FM/synth mixes with PCM **only in mono**;
-*stereo* 16-bit PCM + FM is not a supported combination.
+*stereo* 16-bit PCM + FM is not a supported combination. A 1997 power-user
+[mini-FAQ](https://www.newtale.com/pp/article215.html) quantifies the bound: with
+mixing active you get "8 bit 22Khz sound and Adlib music at the same time", while
+16-bit sound excludes AdLib — i.e. the wave+synth mix path caps the digitized
+stream at **8-bit/22 kHz**. That also explains the audible quality drop LGR noted
+when toggling Mix Wave/Synth (not just level attenuation).
 
 **Field behavior (LGR DS311 footage):** under DOS `BMASTER`, Wolfenstein 3D plays FM
 music and digitized SFX *simultaneously*, while Super Fighter and Duke Nukem II
@@ -584,8 +599,9 @@ disassemble cleanly, and a statistical `unidasm` scan across every software
 generation — both byte orders and word phases, entropy + control-flow filtered —
 found no plainly-encoded C5x stream anywhere, so the downloads are tables-only,
 encoded, or generated at run time; next step: disassemble outward from each x86
-`0xCE01` message-builder site to the buffer that feeds it); where the recording ADC lives
-(§1); the `0x10` format-modifier bit's meaning
+`0xCE01` message-builder site to the buffer that feeds it); where the recording ADC
+lives (§1; a period "14-bit" recording claim suggests a TI AIC-class converter [I]);
+the `0x10` format-modifier bit's meaning
 (§5); the IBM Speech Adapter compatibility path (§8.5); and — the load-bearing one for
 §10 — **what in the LPT stack forces `BMASTER`'s per-title serialization** (§8.3:
 Wolfenstein 3D mixes FM+PCM, Super Fighter / Duke Nukem II serialize over LPT yet
