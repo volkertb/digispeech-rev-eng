@@ -18,17 +18,36 @@ A goal is that a fully free/open-source implementation can be built from this gu
 
 ## 1. Device model
 
-The DS301 is an external **programmable DSP + audio codec** (DS301 ASIC, fabricated
-by TI; the board also carries a second custom ASIC marked GPS `MVA70018`, no public
-datasheet — LGR teardown) with its own RAM, DAC, ADC, and a hardware interrupt line, hanging off the PC
-**parallel (LPT) port** and externally powered (9 V). It is *not* a Covox/Disney-class
+The DS301 is an external **programmable DSP + audio codec** hanging off the PC
+**parallel (LPT) port**, externally powered (9 V adapter, or through the
+speaker/battery unit of the "Plus" bundle — the RJ-45 on the board is that
+proprietary speaker-unit link). It is *not* a Covox/Disney-class
 one-way DAC: it is bidirectional (records), raises IRQs, accepts downloaded DSP
 code, and plays from an onboard buffer under flow control. Think "small sound card on
-an LPT bus." It reports both a DSP and an ASIC version. The same DS301+MVA70018 chip
-set shipped in at least two more form factors (VOGONS teardowns): the **Sony
-PRD-155SB PCMCIA** card (a real SB-register interface — see §8.3) and the **DS103J**
-combo sound+network card. (The earlier serial **DS201/DS201A** — no FM synth — is a
-different generation and out of scope here beyond PDIGI back-compat, §8.5.)
+an LPT bus." It reports both a DSP and an ASIC version.
+
+**Board-level identification** (DS301 MAIN UNIT rev 0.4 photos, Jan 1993 — posted
+on [VOGONS](https://www.vogons.org/viewtopic.php?p=427977#p427977), attachments
+recovered from archive.org): the "DS301" chip is a **custom-mask TI
+TMS320C53** 16-bit fixed-point DSP (marked `D32053FNL / DS301`, date code wk50/1992;
+C5x family: 16K-word mask ROM + 4K-word on-chip RAM), clocked by a **40.960 MHz**
+crystal. The companion "GPS" chip is a **GEC Plessey Semiconductors semi-custom gate
+array** — `CLA74022CG` on this early board, `MVA70018CG` on later DS311/DS103J
+units — the LPT front-end / DSP-host glue [I role]. Playback runs through a
+**Philips TDA1543** dual 16-bit DAC; a 74HC4053 analog mux fits the output-routing
+mixer modes of §8.3 [I]; a MAX758 buck regulator derives 5 V from the 9 V input.
+**There is no external RAM**: downloaded code and audio buffers must fit the C53's
+4K-word on-chip RAM — bounding the onboard buffer depth (§13) and matching the 4 KB
+streaming block (§5) and the tiny ≤`0x79`-word download records. No discrete ADC is
+visible; recording likely digitizes inside the gate array or via the DSP's serial
+port [?]. This settles two community disputes: the chips are *not* ESS parts, and
+the DSP is exactly the "TMS32053" once guessed on VOGONS. The same chip set shipped
+in at least two more form factors (VOGONS teardowns): the **Sony PRD-155SB PCMCIA**
+card (a real SB-register interface — see §8.3) and the **DS103J** combo
+sound+network card. (The earlier serial **DS201/DS201A** is a different generation,
+out of scope here beyond PDIGI back-compat (§8.5) — no FM; it reportedly offers a
+PCjr/Tandy-style three-voice SN76496-like tone generator, noise channel not
+emulated.)
 
 ### 1.1 Hardware vs. host software
 
@@ -197,8 +216,14 @@ Above the word channel the driver sends structured messages. The playback comman
 (4 KB streaming granularity), length. It is shipped word-by-word with the command
 control-nibble ("+6"). A separate **download** message class writes DSP
 code/coefficients to addressable device memory: records `{target addr, len ≤ 0x79,
-data}` with marker `0xCE01` [O @`0x4526`] — how speech engines etc. are installed
-(payload DSP ISA [?]).
+data}` with marker `0xCE01` [O @`0x4526`] — how speech engines etc. are installed.
+**The target ISA is now known — TMS320C5x** (the DSP is a masked TMS320C53, §1) —
+so payloads are C5x code and/or coefficient tables, and target addresses are C53
+on-chip memory. First disassembly attempt: the `PDRV*.DAT` overlays are MZ-framed
+**x86** modules (the `0xCE01` constant appears there as an x86 immediate in the
+message-builder code), and their embedded non-x86 payload blocks do *not* decode as
+clean C5x instructions under `unidasm -arch tms320c5x` (either byte order) — tables
+or encoded storage [?]; locating a raw firmware image is open (§13).
 
 **Format codes [O — classifier disassembled @`0x1e74`–`0x1f5c`]:** mono `0x00`
 8-bit linear, `0x01` µ-law, `0x02` A-law, `0x03` 16-bit linear; stereo (bit `0x40`)
@@ -210,7 +235,13 @@ fields match a sub-mode (what it selects [I]). Manual rates: **stereo** 8/16-bit
 4 kHz–44.1 kHz. The manual also specs **effective bandwidth**: playback 16 kHz,
 recording 3.4 kHz — the analog path is band-limited well below the maximum sample
 rates (recording is telephone-band), which sets realistic fidelity expectations for
-any emulator or replacement device.
+any emulator or replacement device. Corroboration and a likely mechanism: a hardware
+demo ([VWestlife](https://www.youtube.com/watch?v=t7VxWbCgWHk)) measured 44.1 kHz
+playback lowpass-filtered at ~13 kHz and suspected internal downsampling (while
+crediting the device for having a proper anti-aliasing filter at all); and from the
+40.960 MHz master clock, 8/16/32 kHz divide exactly while 44.1 kHz does not. So the
+device plausibly **resamples high rates to an exact-divisor internal rate**, making
+"44.1 kHz" a transport-format claim rather than a DAC-clock claim [I].
 
 ---
 
@@ -224,7 +255,11 @@ any emulator or replacement device.
 - Playback pacing is **IRQ-driven** (device asks for the next block); Δ governs
   transfer speed, the IRQ governs audio timing.
 - **The write path is open-loop** — it never polls a BUSY/ACK line, just waits the
-  calibrated delay [O — no `IN` in the write path]. This is the main fragility on
+  calibrated delay [O — no `IN` in the write path]. Field corroboration (a period
+  owner, in the VWestlife video's comments): the unit was "very speed sensitive" —
+  turbo switches broke it, and after moving from an 8088 to a 386 his previously
+  recorded files *played back at the wrong pitch*, implying the effective sample
+  rate is host-paced in at least some paths [I]. This is the main fragility on
   later hardware; risks are: uncalibrated port latency; **USB→parallel adapters don't
   expose register-level SPP** (they emulate the printer protocol) so bit-banging
   fails; and dependence on a working LPT **IRQ**. The Disney Sound Source survives
@@ -249,7 +284,8 @@ with the nibble-read primitive, IRQ-paced [O @`0x416c`]. Manual: **mono only**, 
 & 11.025 kHz, 8/16-bit lin/µ/A-law or DVI/OKI/SB-ADPCM. (The Windows Sound Station
 UI offers 22.05 kHz/16-bit recording, but in the LGR footage that setting silently
 reverted to 11.025 kHz/3-bit ADPCM before recording — viewer frame analysis — so
-nothing observed contradicts the manual's recording rates.)
+nothing observed contradicts the manual's recording rates. A May-1993 Usenet
+reviewer likewise found no stereo recording and nothing above 11.025 kHz exposed.)
 
 ---
 
@@ -262,6 +298,17 @@ VCPI 386 protected-mode TSR. Installs V86 **I/O-port traps** on the SB DSP ports
 IRQ) [O — `bts` trap bitmap; per-port handler table `[0x400+port*4]`, `0x388→0x141c`,
 `0x389→0x142c`]. It reconstructs the intended PCM and streams it to the device. (A 386
 + EMM/VCPI is required to *trap* ports in V86 mode — independent of synthesis cost.)
+Period usage constraints (May-1993 Usenet review of the shipping product, preserved
+as `portable.arj` on [VOGONS](https://www.vogons.org/viewtopic.php?p=628871#p628871)):
+BMASTER demanded **XMS/himem.sys and failed under
+QEMM/EMS** (another v2.0 owner reports it accepting EMS *or* XMS — driver builds
+differed — and that the resident portion lives in extended memory, using almost no
+conventional RAM); DMA-driven titles (demos, MOD players) usually failed; and the
+workaround for EMS-needing games was a Windows 386-enhanced DOS box, where the
+**VxD** provides the trap layer with a configurable virtual SB/AdLib/none
+personality and virtual address/IRQ/DMA settings. Reconciling that XMS-only
+behavior with the VCPI code in the binary is open [?] (drivers were updated over
+the product's life).
 
 ### 8.2 AdLib/FM and MIDI
 
@@ -278,9 +325,13 @@ antilog curve, not a waveform.) **No waveform table exists anywhere in the stack
 `PDRV*.DAT`/`DS301.DAT` download payloads were all scanned — and no per-sample
 render loop has been identified. The static evidence therefore agrees with the
 manual: the hosts do **parameter math and register-level FM programming only**, and
-the **device** synthesizes (OPL2-functional, "11-voice" — a stock OPL2 is 9 melodic
-voices, or 6 melodic + 5 percussion = 11 in rhythm mode, so that number claims
-nothing beyond plain OPL2; no discrete OPL chip). Exactly how much
+the **device** synthesizes on the TMS320C53 (OPL2-functional, no discrete OPL chip).
+On voice counts: the Digispeech Plus manual says "11-voice OPL2"; the earlier
+Port·Able Sound Plus spec sheet says "**9 melodic or 7 melodic and 4 percussive
+voices**" — note the 7+4 split differs from a real OPL2's rhythm mode (6 melodic +
+5 percussion), marking the FM engine as a *functional reimplementation*, not a
+register-exact OPL2 — consistent with its audibly dropped instruments (e.g. in
+CANYON.MID). Exactly how much
 `BMASTER` processes host-side before handing off is **[?]**, but now bounded:
 parameter translation yes, waveform generation no. **MIDI** uses the same
 emulated-FM path: `DS301.DRV` is the MIDI driver (`MODMESSAGE`) and shares those
@@ -322,7 +373,19 @@ static finding that the Windows driver contains only FM *translation* tables (no
 waveform data, no render loop) actively supports it. Host pre-mixing
 remains formally unexcluded [?]; the two are trivially distinguishable on the wire
 (host pre-mix ⇒ FM register traffic replaced by one PCM stream in mix mode; device
-mix ⇒ both keep flowing). A *separate* limit (v4.00 docs): **full-duplex play+record** requires
+mix ⇒ both keep flowing).
+
+**Period corroboration:** the manufacturer's own Port·Able Sound Plus spec sheet
+claims "**simultaneous synthesized music and digitized audio playback**", and the
+May-1993 Usenet review's compatibility chart (same `portable.arj` source, §8.1) shows full
+music+SFX operation ("SB") for Wolfenstein 3D, A-Train, The Incredible Machine,
+Kaeon and X-Wing, while other titles ran AdLib-only or broke — so mixing worked for
+many titles on the day-one stack, and the per-title split was visible from the
+start. The same review notes the stereo **line-in is an always-on analog
+mix-through** to line-out/speaker (CD-audio mixing use case), matching the mixer
+model's "plus stereo line-in" path.
+
+A *separate* limit (v4.00 docs): **full-duplex play+record** requires
 wave/synth mixing **off** — i.e. the device has a small fixed number of simultaneous
 audio paths. The manual also specs a **master volume control** (0–94.5 dB range),
 i.e. a host-settable volume command (encoding [?]).
@@ -499,7 +562,10 @@ The `.SYS` is an MZ file with a `0x200`-byte header, so file offset = image offs
 
 **Open:** DOS `BMASTER` host/device FM division and on-wire FM encoding (§8.2); command
 opcodes for the native API, ADPCM, power, and master volume (§5/§8/§10.2); onboard
-buffer depth; downloaded-DSP image format; the `0x10` format-modifier bit's meaning
+buffer depth (now bounded by the C53's 4K-word on-chip RAM, §1); the downloaded-DSP
+image *encoding* (ISA known: TMS320C5x, §5 — but the `PDRV*.DAT` payload blobs don't
+disassemble cleanly, so they're tables or encoded); where the recording ADC lives
+(§1); the `0x10` format-modifier bit's meaning
 (§5); the IBM Speech Adapter compatibility path (§8.5); and — the load-bearing one for
 §10 — **what in the LPT stack forces `BMASTER`'s per-title serialization** (§8.3:
 Wolfenstein 3D mixes FM+PCM, Super Fighter / Duke Nukem II serialize over LPT yet
