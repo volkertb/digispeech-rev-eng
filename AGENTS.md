@@ -31,7 +31,9 @@ backend). Read it first — the technical detail lives there, not here.
 - `DOS_WIN3.X_WIN95_Install_v4.00/` — later v4.00 / Windows-95 set (`DS3XX.*`,
   `VDS3XX.386`). Wire protocol identical; still OPL2/SB-class.
 - `source-docs/…Digispeech_Plus.pdf` — manufacturer manual (primary source;
-  ~17 MB, untracked).
+  ~17 MB, untracked). Also untracked there: LGR Oddware DS311 video transcript and
+  its YouTube comments (`lgr-digispeech-youtube-video-{transcript,comments}.txt`) —
+  third-party text, keep out of the public repo.
 - `tools/mzdis.py` — MZ loader + 16-bit disasm helpers (`info` / `io` / `dis` /
   `strings`). `tools/vxddis.py` — 32-bit LE/VxD disasm that skips the DDK
   `int 20h`+dword `VxDcall` so it doesn't desync (use for `VDS*.386`). Pure
@@ -46,8 +48,9 @@ spaces, write cursor starts at `0xFEE`, flag bit 1 = literal / 0 = back-ref).
 ## Port model (summary; full detail in the guide)
 
 Standard **SPP only — no EPP/ECP.** `base` = Data (LPT1 `0x378` / LPT2 `0x278` /
-LPT3 `0x3BC`, discovered from BIOS Data Area `0040:0008`); `base+1` = Status (five
-input lines carry data back in nibble mode plus handshake/IRQ); `base+2` = Control
+LPT3 `0x3BC`, discovered from BIOS Data Area `0040:0008`); `base+1` = Status (four
+lines — b3/b4/b5/b7 — carry data back in nibble mode; b6 ACK is the handshake/IRQ);
+`base+2` = Control
 (b0 STROBE = write clock, b4 IRQ-enable). Read-back is plain nibble mode over the
 status lines.
 
@@ -56,18 +59,27 @@ status lines.
 - **Manual** (`source-docs/`): corrected two static-RE conclusions — FM and PCM
   *can* mix, but only in **mono**; and FM is a **device DSP** capability
   (OPL2-*functional*, ~11-voice, **no discrete OPL chip**).
-- **LGR Oddware video** (DS311): chip is **TI-fabricated**; demonstrated the
-  FM / stereo-PCM exclusivity; flagged SB-ADPCM as a game stressor.
+- **LGR Oddware video + comments** (DS311): chip is **TI-fabricated** (board also
+  carries a second ASIC marked GPS `MVA70018`, no public datasheet); showed DOS
+  `BMASTER` **mixing** FM+PCM in Wolfenstein 3D but **serializing** in Super
+  Fighter / Duke Nukem II (all mono titles — audio evidence, not the transcript,
+  which even contradicts it at 22:33), and Windows mixing via the opt-in Mix
+  Wave/Synth; comments resolved the apparent 22 kHz-recording spec conflict (the
+  UI setting silently reverted — manual's 8/11.025 kHz stands). SB-ADPCM as a
+  Duke II stressor is community knowledge (VOGONS / dosemu2 #1060), not from the
+  video.
 - **v4.00 / Win95 software**: protocol unchanged across the family and versions;
   adds Win95 support + an OS-visible mixer/aux; still no OPL3/SB16.
 
 ## Open questions — need a dynamic capture, not more static RE
 
 The DOS `BMASTER` host/device FM division and on-wire FM encoding; exact command
-opcodes (native PDIGI API, ADPCM, power up/down); onboard buffer depth;
-downloaded-DSP image/ISA format; full format-code bitfields; and the load-bearing
-one for a "better device" — whether the original drivers emit FM+PCM concurrently
-or serialize them.
+opcodes (native PDIGI API, ADPCM, power up/down, master volume); onboard buffer
+depth; downloaded-DSP image/ISA format; the `0x10` format-modifier bit; and the
+load-bearing one for a "better device" — **what governs `BMASTER`'s per-title
+mix-vs-serialize behavior** (Wolf3D mixes FM+PCM; Super Fighter / Duke Nukem II
+serialize; all mono) and what a mixed stream looks like on the wire. The Wolf3D
+vs Duke II capture pair is the most diagnostic single experiment.
 
 **Resolve via** a logic-analyzer LPT capture (detection / PCM tone / FM-only /
 mixed) or iterative bring-up (guide §13). Caveat: stock DOSBox / DOSBox-X do **not**
@@ -79,7 +91,14 @@ real-hardware passthrough or a stub responder that satisfies detection.
 In `BMASTER`'s obfuscated 32-bit VCPI code, address-pattern greps give false
 positives — a promising "synthesis-table reference" at `0xe600` was actually
 `mov al,[0x15xx]; out 0x0a/0b/0c` (8237 DMA emulation), not a table lookup.
-**Disassemble / verify raw bytes before trusting a pattern grep.**
+Second instance: a table peaking at `0x7FFF` was long described as a "16-bit
+sine" (implying host synthesis); shape analysis shows an exponential **antilog**
+curve saturating at `0x7FFF` — a level table. All FM data shared between
+`BMASTER` and `DS301.DRV` is MIDI/AdLib→OPL *translation* material (operator
+offset map, patch bytes, 2^(1/32) pitch table, antilog); no waveform table
+exists anywhere in the stack, incl. the `PDRV*.DAT`/`DS301.DAT` payloads.
+**Disassemble / verify raw bytes and table *shapes* before trusting a pattern
+grep or a peak value.**
 
 ## Constraints (keep for any future work)
 

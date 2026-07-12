@@ -19,7 +19,8 @@ A goal is that a fully free/open-source implementation can be built from this gu
 ## 1. Device model
 
 The DS301 is an external **programmable DSP + audio codec** (DS301 ASIC, fabricated
-by TI) with its own RAM, DAC, ADC, and a hardware interrupt line, hanging off the PC
+by TI; the board also carries a second custom ASIC marked GPS `MVA70018`, no public
+datasheet — LGR teardown) with its own RAM, DAC, ADC, and a hardware interrupt line, hanging off the PC
 **parallel (LPT) port** and externally powered (9 V). It is *not* a Covox/Disney-class
 one-way DAC: it is bidirectional (records), raises IRQs, accepts downloaded DSP
 code, and plays from an onboard buffer under flow control. Think "small sound card on
@@ -35,7 +36,7 @@ an LPT bus." It reports both a DSP and an ASIC version.
 | MIDI (Win `MODMESSAGE`; DOS XMIDI via `PDRVXM`) | Host → same emulated-FM path as AdLib | O |
 | Sound Blaster *digitized* emulation | Host traps SB ports → streams PCM to device | O |
 | Codecs: µ/A-law, SB/OKI/DVI/MS-ADPCM, CVSD | Device DSP (decode/encode) | O names / ? wire |
-| Speech coders RELP, CELP, LPC10; LPC vocabulary | Device DSP | O / ? wire |
+| Speech coders: LPC ("LPC10" in binaries) & CELP **playback-only**, RELP record+playback (manual §E); LPC vocabulary | Device DSP | O / ? wire |
 | Text-to-speech (First Byte engine) | Host text→phoneme; device synth | O / ? wire |
 | Native "Digispeech" API (`PDIGI`+`PDRV*.DAT`) | Host driver, same LPT protocol | O / ? opcodes |
 
@@ -65,8 +66,9 @@ solid — read directly and corroborated by the manual and hardware demos. The
 **forward-looking design claims** in §10 — chiefly that a new device can do *flawless*
 simultaneous FM+PCM while staying *fully* compatible with the original software — are
 well-reasoned but **unproven**; validate them (bus capture or iterative bring-up,
-§13) before relying on them. The binding unknown is whether the original drivers emit
-FM and PCM concurrently or serialize them.
+§13) before relying on them. The binding unknown is *what governs* FM+PCM mixing
+under the original DOS stack — field footage shows `BMASTER` mixing for some titles
+and serializing for others (§8.3) — and what a mixed stream looks like on the wire.
 
 ---
 
@@ -82,10 +84,11 @@ at runtime, §4).
 | Status | `BASE+1` | read | b7 /BUSY(inv), b6 ACK, b5 PAPER-OUT, b4 SELECT, b3 ERROR |
 | Control | `BASE+2` | write | b0 STROBE(inv), b1 AUTOFEED(inv), b2 INIT, b3 SELECT-IN(inv), b4 IRQ-en |
 
-Data sends bytes; Control clocks them (STROBE) and holds the transfer state; the five
-Status inputs carry data *back* (nibble mode) and the handshake/interrupt. **A
-compatible reimplementation must treat SPP register bit-banging as the sole required
-transport.**
+Data sends bytes; Control clocks them (STROBE) and holds the transfer state; **four**
+of the five Status inputs (b3/b4/b5/b7) carry data *back* (nibble mode) while b6
+(ACK) is the handshake/interrupt line — the decode tables in §3.2 treat it as a
+don't-care. **A compatible reimplementation must treat SPP register bit-banging as
+the sole required transport.**
 
 ---
 
@@ -97,17 +100,22 @@ Sends one 16-bit word (used for commands *and* sample data):
 
 ```
 write DATA    = low_byte
-write CONTROL = 0x0E        ; AUTOFEED+INIT+SELECT-IN asserted, STROBE idle
+write CONTROL = 0x0E        ; transfer state, STROBE bit clear (idle)
 wait  Δ1
-write CONTROL = 0x0F        ; raise STROBE → latch low byte
+write CONTROL = 0x0F        ; set STROBE bit → latch low byte
 wait  Δ2
 write DATA    = high_byte
 wait  Δ3
-write CONTROL = 0x0E        ; drop STROBE → latch high byte
+write CONTROL = 0x0E        ; clear STROBE bit → latch high byte
 ```
 
-STROBE (Control b0) is the write clock; a word is two byte-latches (low on the rising
-edge, high on the falling edge). `0x0E` is the transfer-enabled/strobe-idle state. The
+STROBE (Control b0) is the write clock; a word is two byte-latches (low when the
+STROBE bit sets, high when it clears). **Register vs. pin polarity** (matters to a
+device implementer): Control b0/b1/b3 are inverted by the port hardware, b2 is not.
+So `0x0E` puts the connector at /STROBE **high** (idle), /AUTOFD low, /INIT high
+(inactive — not resetting), /SELECTIN low; writing `0x0F` drives the /STROBE **pin
+low**. On the wire the low byte therefore latches on the *falling* edge of /STROBE
+and the high byte on its *rising* edge. The
 **low control nibble is a stream/sub-command selector** carried alongside the strobe:
 `0x0E` base for sample data, a "+6" variant for command words, "+0xC/+0xD" to switch
 to read mode. The Δ delays pace the host to the device's word-acceptance rate and are
@@ -115,7 +123,8 @@ CPU-calibrated (§6).
 
 ### 3.2 nibble-read (device → host) [O — `DS301.SYS` @`0x40c0`/`0x416c`, +DRV/VxD]
 
-The device returns data over the five Status lines, one nibble per select:
+The device returns data over the Status lines (four data lines + ACK, §2), one
+nibble per select:
 
 ```
 for n in 0,1,2,3:
@@ -138,6 +147,14 @@ HIGH = LOW << 4:
  10 90 50 d0 30 b0 70 f0 10 90 50 d0 30 b0 70 f0
  00 80 40 c0 20 a0 60 e0 00 80 40 c0 20 a0 60 e0
 ```
+
+The tables' structure is self-consistent with the port hardware: index bit 3
+(Status b6, ACK) is a don't-care (both 8-entry halves repeat), so ACK carries no
+data — it is the handshake/IRQ line; and output bit 0 is the *inverse* of index
+bit 4 (Status b7), matching BUSY's hardware inversion. Returned data rides on
+status lines b3/b4/b5/b7 only. The same two tables appear byte-identical in
+`BMASTER.EXE`, `DGSETUP.EXE`, and `PDIGI.EXE` (file offsets `0xea88`, `0xedb9`,
+`0x69ee`) — four independently shipped binaries agree.
 
 ---
 
@@ -176,10 +193,17 @@ code/coefficients to addressable device memory: records `{target addr, len ≤ 0
 data}` with marker `0xCE01` [O @`0x4526`] — how speech engines etc. are installed
 (payload DSP ISA [?]).
 
-**Format codes [O @`0x1e74`]:** `0x00` mono-8, `0x03` mono-16, `0x48` stereo-16,
-`0x49` stereo-8, `0x4A` stereo variant; bit `0x40` = stereo (other low/`0x10`/`0x08`
-bits select width/sub-mode [I]). Manual rates: **stereo** 8/16-bit (or 8-bit µ-law) at
-11.025/22.05/44.1 kHz; **mono** 8-bit lin/µ/A-law or 16-bit lin, 4 kHz–44.1 kHz.
+**Format codes [O — classifier disassembled @`0x1e74`–`0x1f5c`]:** mono `0x00`
+8-bit linear, `0x01` µ-law, `0x02` A-law, `0x03` 16-bit linear; stereo (bit `0x40`)
+`0x48` 16-bit linear, `0x49` 8-bit linear, `0x4A` µ-law — exactly the manual's three
+stereo formats. The classifier also keeps a codec-family side variable (0 = linear,
+1 = µ-law, 2 = A-law) and ORs in a modifier bit `0x10` when two further request
+fields match a sub-mode (what it selects [I]). Manual rates: **stereo** 8/16-bit (or
+8-bit µ-law) at 11.025/22.05/44.1 kHz; **mono** 8-bit lin/µ/A-law or 16-bit lin,
+4 kHz–44.1 kHz. The manual also specs **effective bandwidth**: playback 16 kHz,
+recording 3.4 kHz — the analog path is band-limited well below the maximum sample
+rates (recording is telephone-band), which sets realistic fidelity expectations for
+any emulator or replacement device.
 
 ---
 
@@ -215,7 +239,10 @@ bytes-per-frame.
 
 **Recording (secondary):** put the device in capture mode, then read 16-bit words
 with the nibble-read primitive, IRQ-paced [O @`0x416c`]. Manual: **mono only**, 8 kHz
-& 11.025 kHz, 8/16-bit lin/µ/A-law or DVI/OKI/SB-ADPCM.
+& 11.025 kHz, 8/16-bit lin/µ/A-law or DVI/OKI/SB-ADPCM. (The Windows Sound Station
+UI offers 22.05 kHz/16-bit recording, but in the LGR footage that setting silently
+reverted to 11.025 kHz/3-bit ADPCM before recording — viewer frame analysis — so
+nothing observed contradicts the manual's recording rates.)
 
 ---
 
@@ -232,24 +259,54 @@ IRQ) [O — `bts` trap bitmap; per-port handler table `[0x400+port*4]`, `0x388�
 ### 8.2 AdLib/FM and MIDI
 
 The AdLib handlers latch the OPL register/data into a host shadow (`~0x1670`) rather
-than forwarding each write live [O]; `BMASTER` also carries synthesis-style tables
-(16-bit sine peaking `0x7FFF`, `2^(-n/8)` antilog). The manual attributes the FM
-synthesis to the **device** (OPL2-functional, ~11-voice, so no discrete OPL chip), so
-the shadow state ultimately drives the device's own FM synth. Exactly how much
-`BMASTER` processes host-side before handing off is **[?]**. **MIDI** uses the same
-emulated-FM path: `DS301.DRV` is the MIDI driver (`MODMESSAGE`) and carries the same
-antilog table as `BMASTER`; DOS MIDI comes via the `PDRVXM` (XMIDI) overlay. MIDI
-therefore inherits FM's limits (dropped instruments) and the mono-mix rule.
+than forwarding each write live [O]. The FM-related data `BMASTER` carries — shared
+byte-identically with `DS301.DRV` in five regions [O — e.g. `BMASTER` `0xe750` =
+DRV raw `0x7b96`] — is a **translation layer, not a synthesizer**: an OPL
+operator-offset map (`00–05`/`08–0D`/`10–15`), OPL patch/level byte tables, an
+exponential pitch table (step ratio 2^(1/32), i.e. MIDI note+bend → F-number math),
+and an exponential level table saturating at `0x7FFF`. (An earlier pass read that
+last table as a "16-bit sine peaking `0x7FFF`" — shape analysis shows it is an
+antilog curve, not a waveform.) **No waveform table exists anywhere in the stack**
+— `BMASTER.EXE` + its overlays, `DS301.DRV`, `VDS301.386`, `DS301.SYS`, and the
+`PDRV*.DAT`/`DS301.DAT` download payloads were all scanned — and no per-sample
+render loop has been identified. The static evidence therefore agrees with the
+manual: the hosts do **parameter math and register-level FM programming only**, and
+the **device** synthesizes (OPL2-functional, "11-voice" — a stock OPL2 is 9 melodic
+voices, or 6 melodic + 5 percussion = 11 in rhythm mode, so that number claims
+nothing beyond plain OPL2; no discrete OPL chip). Exactly how much
+`BMASTER` processes host-side before handing off is **[?]**, but now bounded:
+parameter translation yes, waveform generation no. **MIDI** uses the same
+emulated-FM path: `DS301.DRV` is the MIDI driver (`MODMESSAGE`) and shares those
+translation tables with `BMASTER`; DOS MIDI comes via the `PDRVXM` (XMIDI) overlay.
+MIDI therefore inherits FM's limits (dropped instruments) and the mono-mix rule.
 
 ### 8.3 The mono-mixer rule (why FM+stereo-PCM don't coexist)
 
 The device's output mixer offers **either** stereo digital + line-in **or** mono
 synth + mono digital + line-in (manual). So FM/synth mixes with PCM **only in mono**;
-*stereo* 16-bit PCM + FM is not a supported combination. This explains the field
-behavior: mono games (e.g. Wolfenstein 3D) mix fine, while stereo titles or ones whose
-driver path doesn't engage the mono mix mode serialize the two. A *separate* limit
-(v4.00 docs): **full-duplex play+record** requires wave/synth mixing **off** — i.e. the
-device has a small fixed number of simultaneous audio paths.
+*stereo* 16-bit PCM + FM is not a supported combination.
+
+**Field behavior (LGR DS311 footage):** under DOS `BMASTER`, Wolfenstein 3D plays FM
+music and digitized SFX *simultaneously*, while Super Fighter and Duke Nukem II
+audibly **serialize** (music suspends whenever a sample plays). All three are mono
+AdLib+SB titles, so mono-vs-stereo alone does not decide it — the differentiator is
+unknown [?]; Duke II's ADPCM-coded SFX and per-title SB-DSP usage patterns are the
+prime suspects, which makes a Wolf3D-vs-Duke II capture the single most diagnostic
+experiment (§13). Under Windows, wave+synth play together only with the opt-in
+**Mix Wave/Synth** setting; a listener report that enabling it drops both streams'
+volume by ~half is simply headroom management ("halve and add") and does not say
+*where* the sum happens — attenuate-and-sum is as natural on the device DSP as in
+host software. The likelier reading is the **device's own mono mixer**: the manual
+puts the FM engine on the device, DOS `BMASTER` already uses it there, a
+Win3.x-era CPU has little headroom for a second, software FM synth — and §8.2's
+static finding that the Windows driver contains only FM *translation* tables (no
+waveform data, no render loop) actively supports it. Host pre-mixing
+remains formally unexcluded [?]; the two are trivially distinguishable on the wire
+(host pre-mix ⇒ FM register traffic replaced by one PCM stream in mix mode; device
+mix ⇒ both keep flowing). A *separate* limit (v4.00 docs): **full-duplex play+record** requires
+wave/synth mixing **off** — i.e. the device has a small fixed number of simultaneous
+audio paths. The manual also specs a **master volume control** (0–94.5 dB range),
+i.e. a host-settable volume command (encoding [?]).
 
 ### 8.4 Playback formats — prioritized for DOS games / Windows apps
 
@@ -263,13 +320,17 @@ device has a small fixed number of simultaneous audio paths.
 
 Also present but not game-critical (recording/telephony/speech): µ-law, A-law, OKI &
 DVI/Intel ADPCM, Microsoft ADPCM, CVSD, and speech coders RELP/CELP/LPC10 — device DSP
-capabilities [O names], wire encodings [?].
+capabilities [O names], wire encodings [?]. Manual §E: LPC and CELP are
+**playback-only**; RELP does record **and** playback.
 
 ### 8.5 Native "Digispeech" API and speech
 
 `PDIGI` is a resident loader for overlay drivers `PDRVA..E` (codec personalities),
 `PDRVTD` (tone), `PDRVXM` (XMIDI), configured via `DGSPEECH.INI`. It uses the same LPT
-protocol (opcodes [?]) and back-supports the serial DS201. **LPC speech** (the flagship
+protocol (opcodes [?]) and back-supports the serial DS201. Period materials also
+advertise compatibility with **IBM Speech Adapter** software (needs additional
+drivers that the LGR demo could not locate) — presumably one more host-driver
+personality over the same wire [?]. **LPC speech** (the flagship
 "Digispeech" capability) sends low-bandwidth LPC/CELP parameters the device vocodes
 (~1.1 kbps). **TTS** (First Byte engine, `DOSREAD`/`DOSTALK`, dictionary/rules) is a
 host text→phoneme pipeline driving the device synth. These are characterized, not
@@ -343,7 +404,7 @@ drivers). Reached via an identity handshake the original drivers never issue.
   fast host (CPU-bound, not beyond the wire — the original has no EPP/ECP and still
   claims those rates). EPP/ECP only where it clearly helps.
 - **Device-side efficiency (pure SPP, low latency):** a **few-ms FIFO + autonomous
-  sample clock** (≈4–8 ms ≈ ~1.5 KB at 44.1k/16/stereo — imperceptible), and a
+  sample clock** (≈4–8 ms ≈ 0.7–1.4 KB at 44.1k/16/stereo — imperceptible), and a
   **status-line "room in FIFO" flag** so the host bursts flat-out and self-paces with
   no fixed delays. These cut host CPU and kill the timing fragility.
 - **On-the-fly compression for 386/486 hosts (royalty-free):** send fewer bytes so the
@@ -394,10 +455,13 @@ dongles) as unusable.
 
 ## 12. Evidence appendix (`DS301.SYS` unless noted; offsets into the load image)
 
+The `.SYS` is an MZ file with a `0x200`-byte header, so file offset = image offset
++ `0x200` (e.g. the §3.2 tables: image `0x2f4`/`0x314` = file `0x4f4`/`0x514`).
+
 | What | Where |
 |---|---|
 | Port vars DATA/STATUS/CONTROL = BASE/+1/+2 | @`0x545c` |
-| write-word strobe sequence | @`0x3e9a`; VxD @`0x175c`; DRV @`0x21d0` (byte-identical) |
+| write-word strobe sequence | @`0x3e9a`; VxD @`0x175c`; DRV: core byte pattern at **raw file** `0x243d` (v2.0 `DS301.DRV`) / `0x6a75` (v4.00 `DS3XX.DRV`), also `BMASTER.EXE` raw `0x210a` — the `.DRV` is an **NE** file `mzdis.py` cannot map, so DRV offsets here are raw-file, not segment-relative |
 | Block writer (contiguous `lodsw`/`out`) | @`0x3ede` |
 | nibble-read + 32-entry tables `[0x2f4]`/`[0x314]` | @`0x40c0`/`0x416c` |
 | Streaming ISR; PIC-mask helper | @`0x4cc6`; @`0x6154` (EOI `0x20`/`0xA0`) |
@@ -414,14 +478,19 @@ dongles) as unusable.
 ## 13. Open questions and validation
 
 **Open:** DOS `BMASTER` host/device FM division and on-wire FM encoding (§8.2); command
-opcodes for the native API, ADPCM, and power (§5/§8/§10.2); onboard buffer depth;
-downloaded-DSP image format; full format-code bitfields; and — the load-bearing one for
-§10 — whether the original drivers emit FM+PCM concurrently or serialize them.
+opcodes for the native API, ADPCM, power, and master volume (§5/§8/§10.2); onboard
+buffer depth; downloaded-DSP image format; the `0x10` format-modifier bit's meaning
+(§5); the IBM Speech Adapter compatibility path (§8.5); and — the load-bearing one for
+§10 — **what governs `BMASTER`'s per-title mix-vs-serialize behavior** (§8.3:
+Wolfenstein 3D mixes FM+PCM, Super Fighter / Duke Nukem II serialize) and what a
+mixed stream looks like on the wire.
 
 **Validate by:** (1) *best* — a logic-analyzer capture of the LPT lines during
-detection, a PCM tone, FM-only, and a mixed game: confirms timing/buffer depth, shows
+detection, a PCM tone, FM-only, and a mixed game — ideally the **Wolf3D vs Duke
+Nukem II pair**, since one mixes and one serializes under the same TSR: confirms
+timing/buffer depth, shows
 whether FM-only puts sparse register writes (device FM) or a PCM stream (host FM) on the
-wire, and reveals serialization. (2) *iterative bring-up* — implement SPP, verify
+wire, and reveals what triggers serialization. (2) *iterative bring-up* — implement SPP, verify
 detection then PCM against the original drivers *before* mixing; then add FM+mixing and
 test under both the original stack and a purpose-written driver to separate a device
 limit from a host-driver limit.
@@ -429,7 +498,9 @@ limit from a host-driver limit.
 ---
 
 *Provenance & licensing: derived by reverse-engineering the original DOS/Windows
-3.x/95 driver and utility binaries and cross-checking the manufacturer manual. Contains
+3.x/95 driver and utility binaries, cross-checking the manufacturer manual, and
+corroborating against public hardware demonstrations (the LGR Oddware DS311 video,
+its viewer reports, and the manufacturer's period materials). Contains
 no source/binary code and no verbatim passages from the software or manual; facts,
 specs, and interface details (not themselves copyrightable) are stated in the author's
 own words. Written so a free, open-source, royalty-free compatible device and driver can
