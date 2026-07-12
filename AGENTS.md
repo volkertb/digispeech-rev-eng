@@ -28,8 +28,13 @@ backend). Read it first — the technical detail lives there, not here.
   `SOUNDPWM.EXE`, etc.
 - `DISK1/`, `DISK2/` — original v2.0 install floppies. Payloads are LZSS-packed as
   `*.XX$`; the Windows `DS301.DRV` / `VDS301.386` are stored uncompressed.
-- `DOS_WIN3.X_WIN95_Install_v4.00/` — later v4.00 / Windows-95 set (`DS3XX.*`,
-  `VDS3XX.386`). Wire protocol identical; still OPL2/SB-class.
+- `DOS_WIN3.X_WIN95_Install_v4.00/` — later Windows-95-era set (`DS3XX.*`,
+  `VDS3XX.386`). Folder name is a misnomer: the binaries self-identify as
+  **"Parallel Audio v4.05"** with **BMASTER "ABLE Sound, V2.07"** (1996, the
+  final release). Wire protocol identical; still OPL2/SB-class.
+  `digispeech_software_v4.05/` (VOGONS p759075) is **byte-identical** payload-
+  for-payload — only readme branding differs (Digispeech Plus vs PORT·ABLE
+  Sound packaging).
 - `source-docs/…Digispeech_Plus.pdf` — manufacturer manual (primary source;
   ~17 MB, untracked). Also untracked there: LGR Oddware DS311 video transcript and
   its YouTube comments (`lgr-digispeech-youtube-video-{transcript,comments}.txt`),
@@ -40,8 +45,10 @@ backend). Read it first — the technical detail lives there, not here.
 - `tools/mzdis.py` — MZ loader + 16-bit disasm helpers (`info` / `io` / `dis` /
   `strings`). `tools/vxddis.py` — 32-bit LE/VxD disasm that skips the DDK
   `int 20h`+dword `VxDcall` so it doesn't desync (use for `VDS*.386`). Pure
-  stdlib + capstone. For DSP-payload work, mame-tools' `unidasm -arch tms320c5x`
-  is installed (capstone has no C5x support).
+  stdlib + capstone. `tools/unpack_xx.py` — EDILZSS1 unpacker for the `*.XX$`
+  install payloads (validated bit-exact against the DISK1→PORTSND pair). For
+  DSP-payload work, mame-tools' `unidasm -arch tms320c5x` is installed
+  (capstone has no C5x support).
 
 Packed-file details, if you ever need to unpack the floppies: `*.XX$` payloads use
 the `EDILZSS1` container = 8-byte signature + NUL-terminated original filename +
@@ -72,8 +79,12 @@ status lines.
   UI setting silently reverted — manual's 8/11.025 kHz stands). SB-ADPCM as a
   Duke II stressor is community knowledge (VOGONS / dosemu2 #1060), not from the
   video.
-- **v4.00 / Win95 software**: protocol unchanged across the family and versions;
-  adds Win95 support + an OS-visible mixer/aux; still no OPL3/SB16.
+- **v4.0x / Win95 software** (self-identifies v4.05; BMASTER V2.00 1993 →
+  V2.07 1996): protocol **and open-loop timing** unchanged across the family
+  and versions (v4.05 `DS3XX.SYS` still uses calibrated `loop` busy-waits; no
+  PIT access at play time; calibration lives as `SD1..SD4` in `DGSPEECH.INI`);
+  adds Win95 support + an OS-visible mixer/aux; still no OPL3/SB16. Both
+  BMASTER builds are VCPI-aware ("unknown VCPI version" diagnostics).
 - **VOGONS t=62280** (teardowns/tests, 2018–24): DS311 = rehoused Port·Able Sound
   Plus; the TI DS301 + GPS `MVA70018` pair also shipped as the **Sony PRD-155SB
   PCMCIA** card and the **DS103J** combo sound+network card. Decisive test (Bondi

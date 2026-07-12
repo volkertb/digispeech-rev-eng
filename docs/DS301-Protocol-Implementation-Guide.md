@@ -251,7 +251,14 @@ device plausibly **resamples high rates to an exact-divisor internal rate**, mak
   stopwatch** (program `0x43`, gate `0x61`, count the fixed 1.193182 MHz timer — not
   cycle-counting) [O @`0x49c4`]. Because the PIT frequency is fixed, the delays are
   correct in real time on *any* CPU, so raw CPU speed does **not** break it; re-run
-  `DGSETUP` after a speed change.
+  `DGSETUP` after a speed change. The calibration result is stored as `SD1=`…`SD4=`
+  (four delay constants) in `DGSPEECH.INI`, alongside `Port`, `IRQ` and `Sync`
+  [O — v4.05 default INI]. The mechanism survived unchanged into the final 1996
+  release: the v4.05 `DS3XX.SYS` write path still uses the same memory-loaded
+  `loop` busy-waits and no driver in the family touches the PIT at play time — so
+  calibration handles any *static* CPU speed (which is why Win95-era drivers could
+  ship without a redesign), and only *changing* speed after calibration (turbo
+  toggles, moving the unit to another machine) breaks it until recalibration.
 - Playback pacing is **IRQ-driven** (device asks for the next block); Δ governs
   transfer speed, the IRQ governs audio timing.
 - **The write path is open-loop** — it never polls a BUSY/ACK line, just waits the
@@ -306,9 +313,13 @@ differed — and that the resident portion lives in extended memory, using almos
 conventional RAM); DMA-driven titles (demos, MOD players) usually failed; and the
 workaround for EMS-needing games was a Windows 386-enhanced DOS box, where the
 **VxD** provides the trap layer with a configurable virtual SB/AdLib/none
-personality and virtual address/IRQ/DMA settings. Reconciling that XMS-only
-behavior with the VCPI code in the binary is open [?] (drivers were updated over
-the product's life).
+personality and virtual address/IRQ/DMA settings. Resolution [O — strings in both
+builds]: BMASTER (self-identified "ABLE Sound" **V2.00** in 1993 → **V2.07** in the
+final 1996 release) is **VCPI-aware by design** — it diagnoses "unknown VCPI
+version" and warns about old EMM386 builds — so it runs under an EMM's VCPI or on
+a himem-only setup; the 1993 QEMM failure was a version quirk, not an XMS-only
+design. The virtual-SB parameters live in `DGSPEECH.INI` (`[Blaster Master]`:
+`VsbBase`/`VsbIRQ`/`VsbDMA`).
 
 ### 8.2 AdLib/FM and MIDI
 
@@ -415,7 +426,12 @@ drivers that the LGR demo could not locate) — presumably one more host-driver
 personality over the same wire [?]. **LPC speech** (the flagship
 "Digispeech" capability) sends low-bandwidth LPC/CELP parameters the device vocodes
 (~1.1 kbps). **TTS** (First Byte engine, `DOSREAD`/`DOSTALK`, dictionary/rules) is a
-host text→phoneme pipeline driving the device synth. These are characterized, not
+host text→phoneme pipeline driving the device synth. Engine file roles [I — from
+structure]: `V*ENG*.PCM` = voice sample data; `V*ENG*.DMI` = DSP *data*-memory
+images (constant tables, `0xFFFF` fills, header carries the engine sample rate);
+`V*ENG*.INS` = index tables (6-byte records with monotonically increasing
+addresses, `0xFFFF` group separators) — none are plainly-encoded C5x instruction
+streams. These are characterized, not
 reverse-engineered to the wire; lower priority than PCM playback.
 
 ---
@@ -564,7 +580,11 @@ The `.SYS` is an MZ file with a `0x200`-byte header, so file offset = image offs
 opcodes for the native API, ADPCM, power, and master volume (§5/§8/§10.2); onboard
 buffer depth (now bounded by the C53's 4K-word on-chip RAM, §1); the downloaded-DSP
 image *encoding* (ISA known: TMS320C5x, §5 — but the `PDRV*.DAT` payload blobs don't
-disassemble cleanly, so they're tables or encoded); where the recording ADC lives
+disassemble cleanly, and a statistical `unidasm` scan across every software
+generation — both byte orders and word phases, entropy + control-flow filtered —
+found no plainly-encoded C5x stream anywhere, so the downloads are tables-only,
+encoded, or generated at run time; next step: disassemble outward from each x86
+`0xCE01` message-builder site to the buffer that feeds it); where the recording ADC lives
 (§1); the `0x10` format-modifier bit's meaning
 (§5); the IBM Speech Adapter compatibility path (§8.5); and — the load-bearing one for
 §10 — **what in the LPT stack forces `BMASTER`'s per-title serialization** (§8.3:
