@@ -372,7 +372,11 @@ when toggling Mix Wave/Synth (not just level attenuation).
 
 **Field behavior (LGR DS311 footage):** under DOS `BMASTER`, Wolfenstein 3D plays FM
 music and digitized SFX *simultaneously*, while Super Fighter and Duke Nukem II
-audibly **serialize** (music suspends whenever a sample plays). All three are mono
+audibly **serialize** (music suspends whenever a sample plays). The Wolf3D
+observation is triply sourced: LGR's DS311 audio, a 1993 reviewer's "works
+completely with music and speech/sound effects" chart entry (§8.1's `portable.arj`
+source), and a [2016 DS301A install video](https://youtu.be/9r6t-c7q-94)
+demonstrating the same on a 486 laptop under the v2.0 stack. All three are mono
 AdLib+SB titles, so mono-vs-stereo alone does not decide it — the differentiator is
 unknown [?]; Duke II's ADPCM-coded SFX and per-title SB-DSP usage patterns are the
 prime suspects, which makes a Wolf3D-vs-Duke II capture the single most diagnostic
