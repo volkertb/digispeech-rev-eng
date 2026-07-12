@@ -70,16 +70,26 @@ status lines.
   video.
 - **v4.00 / Win95 software**: protocol unchanged across the family and versions;
   adds Win95 support + an OS-visible mixer/aux; still no OPL3/SB16.
+- **VOGONS t=62280** (teardowns/tests, 2018–24): DS311 = rehoused Port·Able Sound
+  Plus; the TI DS301 + GPS `MVA70018` pair also shipped as the **Sony PRD-155SB
+  PCMCIA** card and the **DS103J** combo sound+network card. Decisive test (Bondi
+  2021): on the PCMCIA card, Duke Nukem II and Super Fighter **mix FM+PCM fine** —
+  the same titles serialize over LPT — so serialization is an **LPT-stack**
+  property, not the chip. Wayback holds DSP Solutions' last FTP file library
+  (June 1998). (Serial **DS201/DS201A** — earlier generation, no FM — out of
+  scope beyond asides.)
 
 ## Open questions — need a dynamic capture, not more static RE
 
 The DOS `BMASTER` host/device FM division and on-wire FM encoding; exact command
 opcodes (native PDIGI API, ADPCM, power up/down, master volume); onboard buffer
 depth; downloaded-DSP image/ISA format; the `0x10` format-modifier bit; and the
-load-bearing one for a "better device" — **what governs `BMASTER`'s per-title
-mix-vs-serialize behavior** (Wolf3D mixes FM+PCM; Super Fighter / Duke Nukem II
-serialize; all mono) and what a mixed stream looks like on the wire. The Wolf3D
-vs Duke II capture pair is the most diagnostic single experiment.
+load-bearing one for a "better device" — **what in the LPT stack forces
+`BMASTER`'s per-title serialization** (Wolf3D mixes FM+PCM; Super Fighter / Duke
+Nukem II serialize over LPT yet mix on the same chip via PCMCIA ⇒ `BMASTER`'s
+CPU/trap budget or the LPT link, not the silicon) and what a mixed stream looks
+like on the wire. The Wolf3D vs Duke II capture pair is the most diagnostic
+single experiment; the Sony PRD-155SB drivers are a second protocol source.
 
 **Resolve via** a logic-analyzer LPT capture (detection / PCM tone / FM-only /
 mixed) or iterative bring-up (guide §13). Caveat: stock DOSBox / DOSBox-X do **not**

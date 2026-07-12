@@ -24,7 +24,11 @@ datasheet — LGR teardown) with its own RAM, DAC, ADC, and a hardware interrupt
 **parallel (LPT) port** and externally powered (9 V). It is *not* a Covox/Disney-class
 one-way DAC: it is bidirectional (records), raises IRQs, accepts downloaded DSP
 code, and plays from an onboard buffer under flow control. Think "small sound card on
-an LPT bus." It reports both a DSP and an ASIC version.
+an LPT bus." It reports both a DSP and an ASIC version. The same DS301+MVA70018 chip
+set shipped in at least two more form factors (VOGONS teardowns): the **Sony
+PRD-155SB PCMCIA** card (a real SB-register interface — see §8.3) and the **DS103J**
+combo sound+network card. (The earlier serial **DS201/DS201A** — no FM synth — is a
+different generation and out of scope here beyond PDIGI back-compat, §8.5.)
 
 ### 1.1 Hardware vs. host software
 
@@ -65,10 +69,13 @@ SPP-only transport, IRQ pacing, PIT calibration, and the mono-only mixing rule) 
 solid — read directly and corroborated by the manual and hardware demos. The
 **forward-looking design claims** in §10 — chiefly that a new device can do *flawless*
 simultaneous FM+PCM while staying *fully* compatible with the original software — are
-well-reasoned but **unproven**; validate them (bus capture or iterative bring-up,
-§13) before relying on them. The binding unknown is *what governs* FM+PCM mixing
-under the original DOS stack — field footage shows `BMASTER` mixing for some titles
-and serializing for others (§8.3) — and what a mixed stream looks like on the wire.
+now **supported but not fully proven**: the same DS301 silicon demonstrably mixes
+FM+PCM for the very titles that serialize over LPT when driven through a PCMCIA
+SB-register interface (§8.3), so the limit is in the LPT stack, not the chip. Still
+validate over the LPT transport itself (bus capture or iterative bring-up, §13)
+before relying on them. The binding unknown has narrowed to: is it `BMASTER`'s
+CPU/trap budget or the LPT link that forces serialization, and what does a mixed
+stream look like on the wire.
 
 ---
 
@@ -292,7 +299,19 @@ audibly **serialize** (music suspends whenever a sample plays). All three are mo
 AdLib+SB titles, so mono-vs-stereo alone does not decide it — the differentiator is
 unknown [?]; Duke II's ADPCM-coded SFX and per-title SB-DSP usage patterns are the
 prime suspects, which makes a Wolf3D-vs-Duke II capture the single most diagnostic
-experiment (§13). Under Windows, wave+synth play together only with the opt-in
+experiment (§13).
+
+**Counter-experiment (VOGONS, Bondi 2021):** the Sony PRD-155SB PCMCIA card is built
+on the *same DS301 chip* behind a real SB-register interface, and there Duke Nukem II
+and Super Fighter — the very titles that serialize over LPT — play music and
+digitized effects together with no interruptions. So the serialization is a property
+of the **LPT stack** (the `BMASTER` trap/reconstruct layer and/or the LPT transport
+budget), **not of the DS301 silicon** — consistent with Wolf3D managing to mix under
+`BMASTER` when the pipeline keeps up. (Xargon lacked digitized SFX on the PCMCIA card
+too — a game-side quirk, not a Digispeech one.) This is the strongest evidence for
+§10's premise that a compatible device/driver can lift the limits.
+
+Under Windows, wave+synth play together only with the opt-in
 **Mix Wave/Synth** setting; a listener report that enabling it drops both streams'
 volume by ~half is simply headroom management ("halve and add") and does not say
 *where* the sum happens — attenuate-and-sum is as natural on the device DSP as in
@@ -355,7 +374,8 @@ reverse-engineered to the wire; lower priority than PCM playback.
 The FM+stereo-PCM and serialization limits live in the **device firmware and driver
 choices, not the wire** — the transfer layer is a general word channel. So a clean-room
 device can stay detectable/drivable by the original software yet remove the limits.
-*(This is a design hypothesis — validate per §1.3/§13.)*
+*(Backed by the PCMCIA counter-experiment, §8.3 — the same chip mixes when driven
+over a different bus; final validation over the LPT transport per §1.3/§13.)*
 
 ### 10.1 SPP is the baseline; EPP/ECP is optional
 
@@ -481,9 +501,12 @@ The `.SYS` is an MZ file with a `0x200`-byte header, so file offset = image offs
 opcodes for the native API, ADPCM, power, and master volume (§5/§8/§10.2); onboard
 buffer depth; downloaded-DSP image format; the `0x10` format-modifier bit's meaning
 (§5); the IBM Speech Adapter compatibility path (§8.5); and — the load-bearing one for
-§10 — **what governs `BMASTER`'s per-title mix-vs-serialize behavior** (§8.3:
-Wolfenstein 3D mixes FM+PCM, Super Fighter / Duke Nukem II serialize) and what a
-mixed stream looks like on the wire.
+§10 — **what in the LPT stack forces `BMASTER`'s per-title serialization** (§8.3:
+Wolfenstein 3D mixes FM+PCM, Super Fighter / Duke Nukem II serialize over LPT yet
+mix on the same chip via PCMCIA — so it's `BMASTER`'s CPU/trap budget or the LPT
+link, not the silicon) and what a mixed stream looks like on the wire. A second
+protocol source worth mining: the **Sony PRD-155SB PCMCIA** card's drivers talk to
+the same chip family over a simpler bus.
 
 **Validate by:** (1) *best* — a logic-analyzer capture of the LPT lines during
 detection, a PCM tone, FM-only, and a mixed game — ideally the **Wolf3D vs Duke
