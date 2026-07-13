@@ -215,16 +215,32 @@ them (encoding [?]).
 Above the word channel the driver sends structured messages. The playback command
 [O @`0x1c40`] carries: format code, buffer base, rate parameter, block size `0x1000`
 (4 KB streaming granularity), length. It is shipped word-by-word with the command
-control-nibble ("+6"). A separate **download** message class writes DSP
-code/coefficients to addressable device memory: records `{target addr, len ≤ 0x79,
-data}` with marker `0xCE01` [O @`0x4526`] — how speech engines etc. are installed.
-**The target ISA is now known — TMS320C5x** (the DSP is a masked TMS320C53, §1) —
-so payloads are C5x code and/or coefficient tables, and target addresses are C53
-on-chip memory. First disassembly attempt: the `PDRV*.DAT` overlays are MZ-framed
-**x86** modules (the `0xCE01` constant appears there as an x86 immediate in the
-message-builder code), and their embedded non-x86 payload blocks do *not* decode as
-clean C5x instructions under `unidasm -arch tms320c5x` (either byte order) — tables
-or encoded storage [?]; locating a raw firmware image is open (§13).
+control-nibble ("+6"). A separate **download** message class writes to addressable
+device memory. The stream [O — routine fully disassembled @`0x4526`] is a list of
+records `{u16 targetAddr, u16 lenWords, data[lenWords]}`, terminated by
+`addr=0xFFFF,len=0`; `targetAddr ≥ 0xFF00` is a directive (the loader adds `0x300`,
+so `0xFF00` → device address `0x200`). Each record is split into sub-blocks of
+**≤0x79 words**; the per-block device header carries `targetAddr`, `len−1`, a bank
+toggle, and a marker word = **`0xCE01` on the first sub-block of a record, `0` on
+continuations** — i.e. `0xCE01` means "start of a new download record", not a fixed
+file signature. Unlike the open-loop *audio* write path, the download path is
+**closed-loop**: after each block it drives a status handshake and a read-back
+verify loop (nibble-read, §3.2) — a compatible device must ack these.
+
+The target DSP is a masked **TMS320C53** (§1), so payloads are C5x code and/or
+coefficient/parameter data at C53 on-chip addresses. But the payload bytes are
+**not recoverable statically**: they are dense, high-entropy, non-plaintext, and
+**not a standard compression format** [O — tested a 19 KB payload against
+gzip/zlib/deflate/lzma/bz2, DOS-era PKZIP/LHA/ARJ/LZEXE/PKLITE, and the device's
+own EDILZSS1 LZSS: no header, nothing decodes, incompressible]. Whether they are
+custom-packed, enciphered, or simply a dense data table is undetermined from the
+bytes alone; the unpacker (if any) lives in the C53's on-die mask ROM. The
+`PDRV*.DAT` files themselves are MZ-framed **x86** overlays whose code disassembles
+normally — only these embedded payload blobs are opaque. Note a parallel-port bus
+capture does **not** help here: the payload crosses the wire in exactly this stored
+form, so a capture only reproduces bytes we already have; interpreting them needs the
+C53 mask-ROM contents (decap/ROM readout) or vendor materials. Either way this is a
+*nice-to-have*, not a prerequisite for a compatible device (see §10).
 
 **Format codes [O — classifier disassembled @`0x1e74`–`0x1f5c`]:** mono `0x00`
 8-bit linear, `0x01` µ-law, `0x02` A-law, `0x03` 16-bit linear; stereo (bit `0x40`)
@@ -502,9 +518,18 @@ In dependency order:
    already has, and a fast MCU latches whatever the host bit-bangs (the "host too fast"
    failure mode vanishes).
 7. **Mono synth+PCM mixing** — matches the original.
+8. **Download-record handling** — accept the `{addr,len,data}` records (§5) and
+   **satisfy the closed-loop read-back verify** the driver runs after each block
+   (echo the written words, as detection does), then **discard the payload
+   content**. A clean-room device on different silicon (e.g. Picovox) does *not*
+   execute the TMS320C5x blob — it reimplements the mode the download selects
+   (stereo path, a codec, a speech engine) natively, keyed off the format/command
+   codes. The blob is opaque and irrelevant (§5); only the framing + handshake
+   must be honoured so the original software believes the install succeeded.
 
 Not required: recording, stereo-synth mixing, the speech/LPC codecs and native `PDIGI`
-API, the telephony codecs. Bring-up order: detection → 8-bit mono tone → 16-bit/stereo
+API, the telephony codecs, and **decoding the downloaded DSP firmware** (§5 — you
+acknowledge it, you don't run it). Bring-up order: detection → 8-bit mono tone → 16-bit/stereo
 → FM → mono mix → (only for unmodified `BMASTER`) coded-data handling. The SPP
 mechanics and PCM streaming *shape* are known; exact higher-level command opcodes
 (FM forwarding, format select, power) are **[?]** — recover by capture (§13).
@@ -585,7 +610,7 @@ The `.SYS` is an MZ file with a `0x200`-byte header, so file offset = image offs
 | Streaming ISR; PIC-mask helper | @`0x4cc6`; @`0x6154` (EOI `0x20`/`0xA0`) |
 | Detection echo test | @`0x439c`/`0x54c6` |
 | Format classifier; command builder (block size `0x1000`) | @`0x1e74`; @`0x1c40` |
-| DSP download `{addr,len≤0x79,data}` marker `0xCE01` | @`0x4526` |
+| DSP download: `{addr,len,data}` records, ≤0x79-word sub-blocks, `0xCE01` first-block marker, `0xFF00+` directives, closed-loop verify | @`0x4526` (full routine) |
 | Port-range validation | @`0x59bc` |
 | `BMASTER` SB/AdLib traps (`bts` bitmap; `[0x400+port*4]`; `0x388→0x141c`) | 32-bit VCPI |
 | `DGSETUP` PIT-ch2 calibration | @`0x49c4` |
@@ -598,12 +623,17 @@ The `.SYS` is an MZ file with a `0x200`-byte header, so file offset = image offs
 **Open:** DOS `BMASTER` host/device FM division and on-wire FM encoding (§8.2); command
 opcodes for the native API, ADPCM, power, and master volume (§5/§8/§10.2); onboard
 buffer depth (now bounded by the C53's 4K-word on-chip RAM, §1); the downloaded-DSP
-image *encoding* (ISA known: TMS320C5x, §5 — but the `PDRV*.DAT` payload blobs don't
-disassemble cleanly, and a statistical `unidasm` scan across every software
-generation — both byte orders and word phases, entropy + control-flow filtered —
-found no plainly-encoded C5x stream anywhere, so the downloads are tables-only,
-encoded, or generated at run time; next step: disassemble outward from each x86
-`0xCE01` message-builder site to the buffer that feeds it); where the recording ADC
+payload contents — **settled as far as static RE can go** (§5): the download
+transport/record format is fully recovered, but the payload bytes are dense,
+incompressible, non-plaintext, and not a standard compression format, so the actual
+C53 code/data is unrecoverable from the software alone. A parallel-port bus capture
+would **not** help (the payload crosses the wire in this same stored form, which we
+already hold); the only routes are the C53's on-die mask ROM or vendor materials.
+This is *not blocking* for a compatible device (§10) — a clean-room device
+reimplements the behaviours a download selects rather than executing the original
+bytes; the useful host-side follow-up is only to correlate *which* download record
+accompanies *which* mode (stereo/codec/speech), which is visible in the x86 drivers
+without decoding the DSP payload. Also open: where the recording ADC
 lives (§1; a period "14-bit" recording claim suggests a TI AIC-class converter [I]);
 the `0x10` format-modifier bit's meaning
 (§5); the IBM Speech Adapter compatibility path (§8.5); and — the load-bearing one for
